@@ -2,7 +2,6 @@
 
 import { useState } from "react";
 import Image from "next/image";
-import { PDFDocument, StandardFonts } from "pdf-lib";
 
 type FileWithRotation = {
     file: File;
@@ -62,16 +61,16 @@ export default function Home() {
             return;
         }
 
-        const pdfDoc = await PDFDocument.create();
-        const font = await pdfDoc.embedFont(StandardFonts.Helvetica);
+        if (files.length === 0) {
+            alert("Please add at least one image");
+            return;
+        }
 
-        const margin = 40;
-        const headerFontSize = 20;
-        const headerLineGap = 6;
-        const headerLineHeight = headerFontSize + headerLineGap;
-        const pagePadding = 20;
-        const maxPageWidth = 600;
-        const maxPageHeight = 800;
+        const formData = new FormData();
+        formData.append("name", name);
+        formData.append("employeeNumber", employeeNumber);
+        formData.append("date", date);
+        formData.append("reason", reason);
 
         for (let i = 0; i < files.length; i++) {
             const fileWithRot = files[i];
@@ -80,63 +79,20 @@ export default function Home() {
             const imgBlob = await new Promise<Blob>((res) =>
                 canvas.toBlob((b) => res(b!), fileWithRot.file.type)
             );
-            const imgBytes = await imgBlob.arrayBuffer();
-
-            let image;
-            if (fileWithRot.file.type.includes("jpeg") || fileWithRot.file.type.includes("jpg")) {
-                image = await pdfDoc.embedJpg(imgBytes);
-            } else {
-                image = await pdfDoc.embedPng(imgBytes);
-            }
-
-            const imgWidth = canvas.width;
-            const imgHeight = canvas.height;
-
-            // proportional scaling
-            const widthScale = (maxPageWidth - margin * 2) / imgWidth;
-            const headerLines = 2;
-            const heightScale =
-                (maxPageHeight -
-                    margin * 2 -
-                    (i === 0 ? headerLineHeight * headerLines + pagePadding : 0)) /
-                imgHeight;
-            const scale = Math.min(widthScale, heightScale, 1);
-            const drawWidth = imgWidth * scale;
-            const drawHeight = imgHeight * scale;
-
-            const pageWidth = drawWidth + margin * 2;
-            const pageHeight =
-                drawHeight +
-                margin * 2 +
-                (i === 0 ? headerLineHeight * headerLines + pagePadding : 0);
-
-            const page = pdfDoc.addPage([pageWidth, pageHeight]);
-
-            if (i === 0) {
-                const line1 = `${name}  ${employeeNumber}`;
-                const line2 = `${date}  ${reason}`;
-                const startY = page.getHeight() - headerFontSize - 10;
-
-                [line1, line2].forEach((line, index) => {
-                    page.drawText(line, {
-                        x: margin,
-                        y: startY - index * headerLineHeight,
-                        size: headerFontSize,
-                        font,
-                    });
-                });
-            }
-
-            const x = (page.getWidth() - drawWidth) / 2;
-            const y = margin;
-
-            page.drawImage(image, { x, y, width: drawWidth, height: drawHeight });
+            formData.append("images", imgBlob, fileWithRot.file.name);
         }
 
-        const pdfBytes = await pdfDoc.save();
-        const pdfArrayBuffer = new ArrayBuffer(pdfBytes.byteLength);
-        new Uint8Array(pdfArrayBuffer).set(pdfBytes);
-        const blob = new Blob([pdfArrayBuffer], { type: "application/pdf" });
+        const response = await fetch("/api/download-pdf", {
+            method: "POST",
+            body: formData,
+        });
+
+        if (!response.ok) {
+            alert("Failed to create PDF");
+            return;
+        }
+
+        const blob = await response.blob();
         const url = URL.createObjectURL(blob);
         const a = document.createElement("a");
         a.href = url;
