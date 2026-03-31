@@ -31,12 +31,15 @@ export async function POST(req: Request) {
         const file = images[i];
         const imgBytes = await file.arrayBuffer();
 
-        let image;
-        if (file.type.includes("jpeg") || file.type.includes("jpg")) {
-            image = await pdfDoc.embedJpg(imgBytes);
-        } else {
-            image = await pdfDoc.embedPng(imgBytes);
-        }
+        const nameLower = file.name.toLowerCase();
+        const looksJpeg =
+            file.type.includes("jpeg") ||
+            file.type.includes("jpg") ||
+            nameLower.endsWith(".jpg") ||
+            nameLower.endsWith(".jpeg");
+        const image = looksJpeg
+            ? await pdfDoc.embedJpg(imgBytes)
+            : await pdfDoc.embedPng(imgBytes);
 
         const imgWidth = image.width;
         const imgHeight = image.height;
@@ -80,7 +83,8 @@ export async function POST(req: Request) {
     }
 
     const pdfBytes = await pdfDoc.save();
-    return new Response(pdfBytes, {
+    const body = Uint8Array.from(pdfBytes);
+    return new Response(body, {
         headers: {
             "Content-Type": "application/pdf",
             "Content-Disposition": 'attachment; filename="documents.pdf"',
