@@ -12,8 +12,10 @@ type FileWithRotation = {
 
 export default function Home() {
     const [files, setFiles] = useState<FileWithRotation[]>([]);
+    const [name, setName] = useState("");
     const [employeeNumber, setEmployeeNumber] = useState("");
     const [date, setDate] = useState("");
+    const [reason, setReason] = useState("");
 
     const handleFiles = (e: React.ChangeEvent<HTMLInputElement>) => {
         if (!e.target.files) return;
@@ -55,8 +57,8 @@ export default function Home() {
     };
 
     const createPDF = async () => {
-        if (!employeeNumber || !date) {
-            alert("Please enter employee number and date");
+        if (!name || !employeeNumber || !date || !reason) {
+            alert("Please enter name, employee number, date, and reason");
             return;
         }
 
@@ -64,7 +66,9 @@ export default function Home() {
         const font = await pdfDoc.embedFont(StandardFonts.Helvetica);
 
         const margin = 40;
-        const headerFontSize = 24;
+        const headerFontSize = 20;
+        const headerLineGap = 6;
+        const headerLineHeight = headerFontSize + headerLineGap;
         const pagePadding = 20;
         const maxPageWidth = 600;
         const maxPageHeight = 800;
@@ -90,10 +94,11 @@ export default function Home() {
 
             // proportional scaling
             const widthScale = (maxPageWidth - margin * 2) / imgWidth;
+            const headerLines = 2;
             const heightScale =
                 (maxPageHeight -
                     margin * 2 -
-                    (i === 0 ? headerFontSize + pagePadding : 0)) /
+                    (i === 0 ? headerLineHeight * headerLines + pagePadding : 0)) /
                 imgHeight;
             const scale = Math.min(widthScale, heightScale, 1);
             const drawWidth = imgWidth * scale;
@@ -103,18 +108,22 @@ export default function Home() {
             const pageHeight =
                 drawHeight +
                 margin * 2 +
-                (i === 0 ? headerFontSize + pagePadding : 0);
+                (i === 0 ? headerLineHeight * headerLines + pagePadding : 0);
 
             const page = pdfDoc.addPage([pageWidth, pageHeight]);
 
             if (i === 0) {
-                const headerText = `Date: ${date}    Employee: ${employeeNumber}`;
-                const textWidth = font.widthOfTextAtSize(headerText, headerFontSize);
-                page.drawText(headerText, {
-                    x: (page.getWidth() - textWidth) / 2,
-                    y: page.getHeight() - headerFontSize - 10,
-                    size: headerFontSize,
-                    font,
+                const line1 = `${name}  ${employeeNumber}`;
+                const line2 = `${date}  ${reason}`;
+                const startY = page.getHeight() - headerFontSize - 10;
+
+                [line1, line2].forEach((line, index) => {
+                    page.drawText(line, {
+                        x: margin,
+                        y: startY - index * headerLineHeight,
+                        size: headerFontSize,
+                        font,
+                    });
                 });
             }
 
@@ -138,21 +147,36 @@ export default function Home() {
 
     return (
         <main className="min-h-screen p-6 max-w-xl mx-auto">
-            <h1 className="text-2xl font-bold mb-4">Image to PDF</h1>
+            <h1 className="text-2xl font-bold mb-4">Anns Image to PDF Converter</h1>
 
             <div className="mb-4 space-y-2">
+                <label className="block text-sm font-medium">Name</label>
                 <input
                     type="text"
-                    placeholder="Employee Number"
+                    className="border p-2 rounded w-full"
+                    value={name}
+                    onChange={(e) => setName(e.target.value)}
+                />
+                <label className="block text-sm font-medium">Employee Number</label>
+                <input
+                    type="text"
                     className="border p-2 rounded w-full"
                     value={employeeNumber}
                     onChange={(e) => setEmployeeNumber(e.target.value)}
                 />
+                <label className="block text-sm font-medium">Date</label>
                 <input
-                    type="date"
+                    type="text"
                     className="border p-2 rounded w-full"
                     value={date}
                     onChange={(e) => setDate(e.target.value)}
+                />
+                <label className="block text-sm font-medium">Reason</label>
+                <input
+                    type="text"
+                    className="border p-2 rounded w-full"
+                    value={reason}
+                    onChange={(e) => setReason(e.target.value)}
                 />
             </div>
 
