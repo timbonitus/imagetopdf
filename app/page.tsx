@@ -155,11 +155,20 @@ export default function Home() {
 
     const triggerPdfDownload = (blob: Blob) => {
         const url = URL.createObjectURL(blob);
-        const a = document.createElement("a");
-        a.href = url;
-        a.download = "documents.pdf";
-        a.click();
-        URL.revokeObjectURL(url);
+        // Open in a new tab first — corporate PCs often block forced downloads but
+        // allow tab opens. The browser's built-in PDF viewer has its own save button.
+        const tab = window.open(url, "_blank");
+        if (!tab) {
+            // Popup was blocked — fall back to the download link approach.
+            const a = document.createElement("a");
+            a.href = url;
+            a.download = "documents.pdf";
+            document.body.appendChild(a);
+            a.click();
+            document.body.removeChild(a);
+        }
+        // Revoke after a delay so the tab or download has time to receive the data.
+        setTimeout(() => URL.revokeObjectURL(url), 30_000);
     };
 
     const createPDF = async () => {
