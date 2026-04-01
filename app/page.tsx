@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useLayoutEffect, useState } from "react";
-import { PDFDocument, StandardFonts } from "pdf-lib";
+import { PDFDocument } from "pdf-lib";
 
 type FileWithRotation = {
     file: File;
@@ -34,6 +34,14 @@ function downscaleCanvas(source: HTMLCanvasElement, maxSide: number): HTMLCanvas
     ctx.imageSmoothingQuality = "medium";
     ctx.drawImage(source, 0, 0, nw, nh);
     return out;
+}
+
+/** Returns true if the string contains any character outside the WinAnsi (cp1252) range. */
+function containsNonWinAnsi(text: string): boolean {
+    for (let i = 0; i < text.length; i++) {
+        if (text.charCodeAt(i) > 0xff) return true;
+    }
+    return false;
 }
 
 function imageFilesFromClipboard(data: DataTransfer | null): File[] {
@@ -183,7 +191,6 @@ export default function Home() {
 
         const buildPdfInBrowser = async (maxSide: number, jpegQuality: number) => {
             const pdfDoc = await PDFDocument.create();
-            const font = await pdfDoc.embedFont(StandardFonts.Helvetica);
             const margin = 40;
             const headerFontSize = 20;
             const headerLineGap = 6;
@@ -220,16 +227,33 @@ export default function Home() {
                     (i === 0 ? headerLineHeight * headerLines + pagePadding : 0);
                 const page = pdfDoc.addPage([pageWidth, pageHeight]);
                 if (i === 0) {
-                    const line1 = `${name}  ${employeeNumber}`;
-                    const line2 = `${date}  ${reason}`;
-                    const startY = page.getHeight() - headerFontSize - 10;
-                    [line1, line2].forEach((line, index) => {
-                        page.drawText(line, {
-                            x: margin,
-                            y: startY - index * headerLineHeight,
-                            size: headerFontSize,
-                            font,
-                        });
+                    // Render header text to a canvas using the system font so any Unicode
+                    // characters (e.g. Traditional Chinese) are supported without embedding
+                    // a large CJK font into the PDF.
+                    const hPdfW = drawWidth;
+                    const hPdfH = headerLineHeight * headerLines;
+                    const px = 2; // 2× pixel density for crisp output
+                    const hCanvas = document.createElement("canvas");
+                    hCanvas.width = Math.max(1, Math.round(hPdfW * px));
+                    hCanvas.height = Math.max(1, Math.round(hPdfH * px));
+                    const hCtx = hCanvas.getContext("2d")!;
+                    hCtx.scale(px, px);
+                    hCtx.fillStyle = "#ffffff";
+                    hCtx.fillRect(0, 0, hPdfW, hPdfH);
+                    hCtx.fillStyle = "#000000";
+                    hCtx.font = `${headerFontSize}px sans-serif`;
+                    hCtx.fillText(`${name}  ${employeeNumber}`, 0, headerFontSize);
+                    hCtx.fillText(`${date}  ${reason}`, 0, headerFontSize + headerLineHeight);
+                    const hBlob = await new Promise<Blob>((res, rej) =>
+                        hCanvas.toBlob((b) => b ? res(b) : rej(new Error("Header canvas toBlob returned null")), "image/jpeg", 0.92)
+                    );
+                    const hBytes = await hBlob.arrayBuffer();
+                    const hImage = await pdfDoc.embedJpg(hBytes);
+                    page.drawImage(hImage, {
+                        x: margin,
+                        y: margin + drawHeight + pagePadding,
+                        width: hPdfW,
+                        height: hPdfH,
                     });
                 }
                 const x = (page.getWidth() - drawWidth) / 2;
@@ -241,6 +265,15 @@ export default function Home() {
         };
 
         try {
+            // The server uses a WinAnsi font that cannot encode characters outside
+            // Latin-1 (e.g. Chinese). Skip the server path and build in the browser,
+            // which uses a canvas-rendered header that supports all Unicode.
+            if ([name, employeeNumber, date, reason].some(containsNonWinAnsi)) {
+                const blob = await buildPdfInBrowser(MAX_SIDE_SERVER, JPEG_QUALITY_SERVER);
+                triggerPdfDownload(blob);
+                return;
+            }
+
             const formData = new FormData();
             formData.append("name", name);
             formData.append("employeeNumber", employeeNumber);
