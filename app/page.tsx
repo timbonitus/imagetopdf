@@ -8,9 +8,15 @@ type FileWithRotation = {
     src: string; // preview URL
 };
 
-/** Keeps uploads under typical serverless body limits (e.g. Vercel ~4.5MB). */
-const MAX_CANVAS_SIDE = 1680;
-const JPEG_QUALITY = 0.82;
+/**
+ * Vercel Hobby serverless request bodies are ~4.5MB; many full-resolution phone photos exceed that.
+ * These defaults target fitting several pages under the limit. Tune if you upgrade plan or move uploads to object storage.
+ */
+const MAX_SIDE_SERVER = 1150;
+const JPEG_QUALITY_SERVER = 0.66;
+/** Second pass when the first client build fails (memory / huge pages). */
+const MAX_SIDE_CLIENT_FALLBACK = 880;
+const JPEG_QUALITY_CLIENT_FALLBACK = 0.52;
 
 function downscaleCanvas(source: HTMLCanvasElement, maxSide: number): HTMLCanvasElement {
     const w = source.width;
@@ -23,6 +29,8 @@ function downscaleCanvas(source: HTMLCanvasElement, maxSide: number): HTMLCanvas
     out.width = nw;
     out.height = nh;
     const ctx = out.getContext("2d")!;
+    ctx.imageSmoothingEnabled = true;
+    ctx.imageSmoothingQuality = "medium";
     ctx.drawImage(source, 0, 0, nw, nh);
     return out;
 }
@@ -163,7 +171,7 @@ export default function Home() {
             return;
         }
 
-        const buildPdfInBrowser = async () => {
+        const buildPdfInBrowser = async (maxSide: number, jpegQuality: number) => {
             const { PDFDocument, StandardFonts } = await import("pdf-lib");
             const pdfDoc = await PDFDocument.create();
             const font = await pdfDoc.embedFont(StandardFonts.Helvetica);
@@ -179,9 +187,9 @@ export default function Home() {
             for (let i = 0; i < files.length; i++) {
                 const fileWithRot = files[i];
                 const canvas = await getCanvasFromFile(fileWithRot);
-                const scaled = downscaleCanvas(canvas, MAX_CANVAS_SIDE);
+                const scaled = downscaleCanvas(canvas, maxSide);
                 const imgBlob = await new Promise<Blob>((res) =>
-                    scaled.toBlob((b) => res(b!), "image/jpeg", JPEG_QUALITY)
+                    scaled.toBlob((b) => res(b!), "image/jpeg", jpegQuality)
                 );
                 const imgBytes = await imgBlob.arrayBuffer();
                 const image = await pdfDoc.embedJpg(imgBytes);
@@ -233,9 +241,9 @@ export default function Home() {
             for (let i = 0; i < files.length; i++) {
                 const fileWithRot = files[i];
                 const canvas = await getCanvasFromFile(fileWithRot);
-                const scaled = downscaleCanvas(canvas, MAX_CANVAS_SIDE);
+                const scaled = downscaleCanvas(canvas, MAX_SIDE_SERVER);
                 const imgBlob = await new Promise<Blob>((res) =>
-                    scaled.toBlob((b) => res(b!), "image/jpeg", JPEG_QUALITY)
+                    scaled.toBlob((b) => res(b!), "image/jpeg", JPEG_QUALITY_SERVER)
                 );
                 const jpegFile = new File([imgBlob], `page-${i + 1}.jpg`, { type: "image/jpeg" });
                 formData.append("images", jpegFile);
@@ -263,12 +271,27 @@ export default function Home() {
             const tryFallback = response.status === 413 || response.status >= 500;
 
             if (tryFallback) {
-                const blob = await buildPdfInBrowser();
-                triggerPdfDownload(blob);
-                if (response.status !== 200) {
+                try {
+                    const blob = await buildPdfInBrowser(MAX_SIDE_SERVER, JPEG_QUALITY_SERVER);
+                    triggerPdfDownload(blob);
                     alert(
                         "PDF was built on this device because the server could not finish the request (often upload size or a temporary error)."
                     );
+                } catch {
+                    try {
+                        const blob = await buildPdfInBrowser(
+                            MAX_SIDE_CLIENT_FALLBACK,
+                            JPEG_QUALITY_CLIENT_FALLBACK
+                        );
+                        triggerPdfDownload(blob);
+                        alert(
+                            "PDF was built on this device at extra-compressed quality so it could finish."
+                        );
+                    } catch {
+                        alert(
+                            "Could not create PDF. Try fewer images or lower-resolution photos."
+                        );
+                    }
                 }
                 return;
             }
@@ -276,11 +299,24 @@ export default function Home() {
             alert(serverMessage || `Could not create PDF (${response.status}).`);
         } catch {
             try {
-                const blob = await buildPdfInBrowser();
+                const blob = await buildPdfInBrowser(MAX_SIDE_SERVER, JPEG_QUALITY_SERVER);
                 triggerPdfDownload(blob);
                 alert("PDF was built on this device because the request to the server failed.");
             } catch {
-                alert("Could not create PDF. Try fewer or smaller images.");
+                try {
+                    const blob = await buildPdfInBrowser(
+                        MAX_SIDE_CLIENT_FALLBACK,
+                        JPEG_QUALITY_CLIENT_FALLBACK
+                    );
+                    triggerPdfDownload(blob);
+                    alert(
+                        "PDF was built on this device at reduced quality (server unreachable or image too large)."
+                    );
+                } catch {
+                    alert(
+                        "Could not create PDF. Try fewer images (e.g. under 6 pages) or lower-resolution photos."
+                    );
+                }
             }
         }
     };
