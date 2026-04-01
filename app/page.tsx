@@ -80,18 +80,16 @@ export default function Home() {
         }, 0);
     }, [addFiles]);
 
-    // React synthetic onChange is unreliable for <input type="file"> on some mobile WebKits.
-    // Attach native change + input listeners after the real DOM node exists.
+    // Native change only: iOS Safari fires both change and input for one pick; listening to both
+    // duplicates every selected image.
     useLayoutEffect(() => {
         if (!galleryInput) return;
         const handler = () => {
             ingestGalleryInput(galleryInput);
         };
         galleryInput.addEventListener("change", handler);
-        galleryInput.addEventListener("input", handler);
         return () => {
             galleryInput.removeEventListener("change", handler);
-            galleryInput.removeEventListener("input", handler);
         };
     }, [galleryInput, ingestGalleryInput]);
 
