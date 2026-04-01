@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useLayoutEffect, useState } from "react";
+import { PDFDocument, StandardFonts } from "pdf-lib";
 
 type FileWithRotation = {
     file: File;
@@ -172,7 +173,6 @@ export default function Home() {
         }
 
         const buildPdfInBrowser = async (maxSide: number, jpegQuality: number) => {
-            const { PDFDocument, StandardFonts } = await import("pdf-lib");
             const pdfDoc = await PDFDocument.create();
             const font = await pdfDoc.embedFont(StandardFonts.Helvetica);
             const margin = 40;
@@ -188,8 +188,8 @@ export default function Home() {
                 const fileWithRot = files[i];
                 const canvas = await getCanvasFromFile(fileWithRot);
                 const scaled = downscaleCanvas(canvas, maxSide);
-                const imgBlob = await new Promise<Blob>((res) =>
-                    scaled.toBlob((b) => res(b!), "image/jpeg", jpegQuality)
+                const imgBlob = await new Promise<Blob>((res, rej) =>
+                    scaled.toBlob((b) => b ? res(b) : rej(new Error("Canvas toBlob returned null")), "image/jpeg", jpegQuality)
                 );
                 const imgBytes = await imgBlob.arrayBuffer();
                 const image = await pdfDoc.embedJpg(imgBytes);
