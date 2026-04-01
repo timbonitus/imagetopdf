@@ -161,22 +161,75 @@ export default function Home() {
         return canvas;
     };
 
-    const triggerPdfDownload = (blob: Blob) => {
+    const triggerPdfDownload = async (blob: Blob) => {
+        // Method 1: File System Access API — triggers the OS-native "Save As" dialog.
+        // This bypasses browser download policies entirely because it is an OS-level
+        // operation, not a browser download. Supported in Chrome/Edge 86+.
+        if ("showSaveFilePicker" in window) {
+            try {
+                const handle = await (window as Window & { showSaveFilePicker: Function }).showSaveFilePicker({
+                    suggestedName: "documents.pdf",
+                    types: [{ description: "PDF file", accept: { "application/pdf": [".pdf"] } }],
+                });
+                const writable = await handle.createWritable();
+                await writable.write(blob);
+                await writable.close();
+                return;
+            } catch (e) {
+                // AbortError means the user closed the dialog — respect that and stop.
+                if (e instanceof Error && e.name === "AbortError") return;
+                // Any other error (e.g. API blocked by policy) — fall through.
+            }
+        }
+
+        // Method 2: Legacy IE 11 / old Edge msSaveBlob.
+        if ("msSaveBlob" in navigator) {
+            (navigator as Navigator & { msSaveBlob: Function }).msSaveBlob(blob, "documents.pdf");
+            return;
+        }
+
         const url = URL.createObjectURL(blob);
-        // Open in a new tab first — corporate PCs often block forced downloads but
-        // allow tab opens. The browser's built-in PDF viewer has its own save button.
-        const tab = window.open(url, "_blank");
-        if (!tab) {
-            // Popup was blocked — fall back to the download link approach.
+
+        // Method 3: Custom tab with a Download button, right-click hint, and iframe preview.
+        // Corporate browsers often block the native PDF viewer's save button but still
+        // allow <a download> clicks and "Save link as…" right-clicks.
+        const tab = window.open("", "_blank");
+        if (tab) {
+            tab.document.write(`<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>documents.pdf</title>
+  <style>
+    *{box-sizing:border-box;margin:0;padding:0}
+    body{display:flex;flex-direction:column;height:100vh;font-family:sans-serif}
+    .bar{display:flex;align-items:center;gap:12px;padding:10px 16px;background:#f3f4f6;border-bottom:1px solid #d1d5db;flex-shrink:0;flex-wrap:wrap}
+    .btn{background:#1d4ed8;color:#fff;padding:6px 18px;border-radius:6px;text-decoration:none;font-size:14px;font-weight:500}
+    .hint{font-size:13px;color:#6b7280}
+    iframe{flex:1;border:none;width:100%}
+  </style>
+</head>
+<body>
+  <div class="bar">
+    <a class="btn" href="${url}" download="documents.pdf">Download PDF</a>
+    <span class="hint">If the button is blocked, right-click it and choose <strong>Save link as&hellip;</strong></span>
+  </div>
+  <iframe src="${url}"></iframe>
+</body>
+</html>`);
+            tab.document.close();
+            // Keep the blob alive long enough for the user to click download (5 min).
+            setTimeout(() => URL.revokeObjectURL(url), 300_000);
+        } else {
+            // Method 4: Forced download link (used when popups are blocked).
             const a = document.createElement("a");
             a.href = url;
             a.download = "documents.pdf";
             document.body.appendChild(a);
             a.click();
             document.body.removeChild(a);
+            setTimeout(() => URL.revokeObjectURL(url), 30_000);
         }
-        // Revoke after a delay so the tab or download has time to receive the data.
-        setTimeout(() => URL.revokeObjectURL(url), 30_000);
     };
 
     const createPDF = async () => {
@@ -192,8 +245,8 @@ export default function Home() {
         const buildPdfInBrowser = async (maxSide: number, jpegQuality: number) => {
             const pdfDoc = await PDFDocument.create();
             const margin = 40;
-            const headerFontSize = 20;
-            const headerLineGap = 6;
+            const headerFontSize = 13;
+            const headerLineGap = 5;
             const headerLineHeight = headerFontSize + headerLineGap;
             const pagePadding = 20;
             const maxPageWidth = 600;
@@ -242,8 +295,8 @@ export default function Home() {
                     hCtx.fillRect(0, 0, hPdfW, hPdfH);
                     hCtx.fillStyle = "#000000";
                     hCtx.font = `${headerFontSize}px sans-serif`;
-                    hCtx.fillText(`${name}  ${employeeNumber}`, 0, headerFontSize);
-                    hCtx.fillText(`${date}  ${reason}`, 0, headerFontSize + headerLineHeight);
+                    hCtx.fillText(`${name}  ${employeeNumber}`, 0, headerFontSize, hPdfW);
+                    hCtx.fillText(`${date}  ${reason}`, 0, headerFontSize + headerLineHeight, hPdfW);
                     const hBlob = await new Promise<Blob>((res, rej) =>
                         hCanvas.toBlob((b) => b ? res(b) : rej(new Error("Header canvas toBlob returned null")), "image/jpeg", 0.92)
                     );
@@ -270,7 +323,7 @@ export default function Home() {
             // which uses a canvas-rendered header that supports all Unicode.
             if ([name, employeeNumber, date, reason].some(containsNonWinAnsi)) {
                 const blob = await buildPdfInBrowser(MAX_SIDE_SERVER, JPEG_QUALITY_SERVER);
-                triggerPdfDownload(blob);
+                await triggerPdfDownload(blob);
                 return;
             }
 
@@ -300,7 +353,7 @@ export default function Home() {
 
             if (response.ok && contentType.includes("application/pdf")) {
                 const blob = await response.blob();
-                triggerPdfDownload(blob);
+                await triggerPdfDownload(blob);
                 return;
             }
 
@@ -315,7 +368,7 @@ export default function Home() {
             if (tryFallback) {
                 try {
                     const blob = await buildPdfInBrowser(MAX_SIDE_SERVER, JPEG_QUALITY_SERVER);
-                    triggerPdfDownload(blob);
+                    await triggerPdfDownload(blob);
                     alert(
                         "PDF was built on this device because the server could not finish the request (often upload size or a temporary error)."
                     );
@@ -325,7 +378,7 @@ export default function Home() {
                             MAX_SIDE_CLIENT_FALLBACK,
                             JPEG_QUALITY_CLIENT_FALLBACK
                         );
-                        triggerPdfDownload(blob);
+                        await triggerPdfDownload(blob);
                         alert(
                             "PDF was built on this device at extra-compressed quality so it could finish."
                         );
@@ -341,7 +394,7 @@ export default function Home() {
         } catch (outerErr) {
             try {
                 const blob = await buildPdfInBrowser(MAX_SIDE_SERVER, JPEG_QUALITY_SERVER);
-                triggerPdfDownload(blob);
+                await triggerPdfDownload(blob);
                 alert("PDF was built on this device because the request to the server failed.");
             } catch (e1) {
                 try {
@@ -349,7 +402,7 @@ export default function Home() {
                         MAX_SIDE_CLIENT_FALLBACK,
                         JPEG_QUALITY_CLIENT_FALLBACK
                     );
-                    triggerPdfDownload(blob);
+                    await triggerPdfDownload(blob);
                     alert(
                         "PDF was built on this device at reduced quality (server unreachable or image too large)."
                     );
@@ -388,9 +441,9 @@ export default function Home() {
                     onChange={(e) => setDate(e.target.value)}
                 />
                 <label className="block text-sm font-medium">Reason</label>
-                <input
-                    type="text"
-                    className="border p-2 rounded w-full"
+                <textarea
+                    className="border p-2 rounded w-full resize-y"
+                    rows={3}
                     value={reason}
                     onChange={(e) => setReason(e.target.value)}
                 />
