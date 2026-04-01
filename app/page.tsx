@@ -8,6 +8,39 @@ type FileWithRotation = {
     src: string; // preview URL
 };
 
+/** Keeps uploads under typical serverless body limits (e.g. Vercel ~4.5MB). */
+const MAX_CANVAS_SIDE = 1680;
+const JPEG_QUALITY = 0.82;
+
+function downscaleCanvas(source: HTMLCanvasElement, maxSide: number): HTMLCanvasElement {
+    const w = source.width;
+    const h = source.height;
+    if (w <= maxSide && h <= maxSide) return source;
+    const scale = maxSide / Math.max(w, h);
+    const nw = Math.max(1, Math.round(w * scale));
+    const nh = Math.max(1, Math.round(h * scale));
+    const out = document.createElement("canvas");
+    out.width = nw;
+    out.height = nh;
+    const ctx = out.getContext("2d")!;
+    ctx.drawImage(source, 0, 0, nw, nh);
+    return out;
+}
+
+function imageFilesFromClipboard(data: DataTransfer | null): File[] {
+    if (!data) return [];
+    const out: File[] = [];
+    for (let i = 0; i < data.items.length; i++) {
+        const item = data.items[i];
+        if (item.kind === "file" && item.type.startsWith("image/")) {
+            const f = item.getAsFile();
+            if (f) out.push(f);
+        }
+    }
+    if (out.length > 0) return out;
+    return Array.from(data.files).filter((f) => f.type.startsWith("image/"));
+}
+
 export default function Home() {
     const [files, setFiles] = useState<FileWithRotation[]>([]);
     const [galleryInput, setGalleryInput] = useState<HTMLInputElement | null>(null);
@@ -113,18 +146,86 @@ export default function Home() {
         return canvas;
     };
 
+    const triggerPdfDownload = (blob: Blob) => {
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement("a");
+        a.href = url;
+        a.download = "documents.pdf";
+        a.click();
+        URL.revokeObjectURL(url);
+    };
+
     const createPDF = async () => {
+        if (!name || !employeeNumber || !date || !reason) {
+            alert("Please enter name, employee number, date, and reason");
+            return;
+        }
+        if (files.length === 0) {
+            alert("Please add at least one image");
+            return;
+        }
+
+        const buildPdfInBrowser = async () => {
+            const { PDFDocument, StandardFonts } = await import("pdf-lib");
+            const pdfDoc = await PDFDocument.create();
+            const font = await pdfDoc.embedFont(StandardFonts.Helvetica);
+            const margin = 40;
+            const headerFontSize = 20;
+            const headerLineGap = 6;
+            const headerLineHeight = headerFontSize + headerLineGap;
+            const pagePadding = 20;
+            const maxPageWidth = 600;
+            const maxPageHeight = 800;
+            const headerLines = 2;
+
+            for (let i = 0; i < files.length; i++) {
+                const fileWithRot = files[i];
+                const canvas = await getCanvasFromFile(fileWithRot);
+                const scaled = downscaleCanvas(canvas, MAX_CANVAS_SIDE);
+                const imgBlob = await new Promise<Blob>((res) =>
+                    scaled.toBlob((b) => res(b!), "image/jpeg", JPEG_QUALITY)
+                );
+                const imgBytes = await imgBlob.arrayBuffer();
+                const image = await pdfDoc.embedJpg(imgBytes);
+                const imgWidth = image.width;
+                const imgHeight = image.height;
+                const widthScale = (maxPageWidth - margin * 2) / imgWidth;
+                const heightScale =
+                    (maxPageHeight -
+                        margin * 2 -
+                        (i === 0 ? headerLineHeight * headerLines + pagePadding : 0)) /
+                    imgHeight;
+                const scale = Math.min(widthScale, heightScale, 1);
+                const drawWidth = imgWidth * scale;
+                const drawHeight = imgHeight * scale;
+                const pageWidth = drawWidth + margin * 2;
+                const pageHeight =
+                    drawHeight +
+                    margin * 2 +
+                    (i === 0 ? headerLineHeight * headerLines + pagePadding : 0);
+                const page = pdfDoc.addPage([pageWidth, pageHeight]);
+                if (i === 0) {
+                    const line1 = `${name}  ${employeeNumber}`;
+                    const line2 = `${date}  ${reason}`;
+                    const startY = page.getHeight() - headerFontSize - 10;
+                    [line1, line2].forEach((line, index) => {
+                        page.drawText(line, {
+                            x: margin,
+                            y: startY - index * headerLineHeight,
+                            size: headerFontSize,
+                            font,
+                        });
+                    });
+                }
+                const x = (page.getWidth() - drawWidth) / 2;
+                const y = margin;
+                page.drawImage(image, { x, y, width: drawWidth, height: drawHeight });
+            }
+            const pdfBytes = await pdfDoc.save();
+            return new Blob([Uint8Array.from(pdfBytes)], { type: "application/pdf" });
+        };
+
         try {
-            if (!name || !employeeNumber || !date || !reason) {
-                alert("Please enter name, employee number, date, and reason");
-                return;
-            }
-
-            if (files.length === 0) {
-                alert("Please add at least one image");
-                return;
-            }
-
             const formData = new FormData();
             formData.append("name", name);
             formData.append("employeeNumber", employeeNumber);
@@ -134,8 +235,9 @@ export default function Home() {
             for (let i = 0; i < files.length; i++) {
                 const fileWithRot = files[i];
                 const canvas = await getCanvasFromFile(fileWithRot);
+                const scaled = downscaleCanvas(canvas, MAX_CANVAS_SIDE);
                 const imgBlob = await new Promise<Blob>((res) =>
-                    canvas.toBlob((b) => res(b!), "image/jpeg", 0.92)
+                    scaled.toBlob((b) => res(b!), "image/jpeg", JPEG_QUALITY)
                 );
                 const jpegFile = new File([imgBlob], `page-${i + 1}.jpg`, { type: "image/jpeg" });
                 formData.append("images", jpegFile);
@@ -146,20 +248,42 @@ export default function Home() {
                 body: formData,
             });
 
-            if (!response.ok) {
-                alert("Could not create PDF on the server. Please try again.");
+            const contentType = response.headers.get("content-type") || "";
+
+            if (response.ok && contentType.includes("application/pdf")) {
+                const blob = await response.blob();
+                triggerPdfDownload(blob);
                 return;
             }
 
-            const blob = await response.blob();
-            const url = URL.createObjectURL(blob);
-            const a = document.createElement("a");
-            a.href = url;
-            a.download = "documents.pdf";
-            a.click();
-            URL.revokeObjectURL(url);
+            let serverMessage = "";
+            if (contentType.includes("application/json")) {
+                const data = (await response.json()) as { error?: string };
+                serverMessage = data.error || "";
+            }
+
+            const tryFallback = response.status === 413 || response.status >= 500;
+
+            if (tryFallback) {
+                const blob = await buildPdfInBrowser();
+                triggerPdfDownload(blob);
+                if (response.status !== 200) {
+                    alert(
+                        "PDF was built on this device because the server could not finish the request (often upload size or a temporary error)."
+                    );
+                }
+                return;
+            }
+
+            alert(serverMessage || `Could not create PDF (${response.status}).`);
         } catch {
-            alert("Could not create PDF. Try JPG or PNG photos.");
+            try {
+                const blob = await buildPdfInBrowser();
+                triggerPdfDownload(blob);
+                alert("PDF was built on this device because the request to the server failed.");
+            } catch {
+                alert("Could not create PDF. Try fewer or smaller images.");
+            }
         }
     };
 
@@ -199,7 +323,15 @@ export default function Home() {
             </div>
 
             <div
-                className="border-dashed border-2 border-gray-400 p-6 rounded mb-4"
+                className="border-dashed border-2 border-gray-400 p-6 rounded mb-4 outline-none focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:ring-offset-2"
+                tabIndex={0}
+                onPaste={(e) => {
+                    const pasted = imageFilesFromClipboard(e.clipboardData);
+                    if (pasted.length > 0) {
+                        e.preventDefault();
+                        addFiles(pasted);
+                    }
+                }}
                 onDrop={(e) => {
                     e.preventDefault();
                     addFiles(Array.from(e.dataTransfer.files));
@@ -208,6 +340,17 @@ export default function Home() {
             >
                 <p className="text-center text-sm mb-3">
                     Drag & drop images here, or choose images below.
+                </p>
+                <p className="text-center text-xs text-neutral-600 dark:text-neutral-400 mb-3">
+                    Windows: click this dashed box once, then press{" "}
+                    <kbd className="rounded border border-neutral-300 bg-neutral-100 px-1.5 py-0.5 font-mono text-xs dark:border-neutral-600 dark:bg-neutral-800">
+                        Ctrl
+                    </kbd>{" "}
+                    +{" "}
+                    <kbd className="rounded border border-neutral-300 bg-neutral-100 px-1.5 py-0.5 font-mono text-xs dark:border-neutral-600 dark:bg-neutral-800">
+                        V
+                    </kbd>{" "}
+                    to paste a screenshot from the clipboard.
                 </p>
                 <div
                     className="rounded-lg border border-neutral-300 bg-white p-3 text-neutral-900 shadow-sm dark:bg-white dark:text-neutral-900"
