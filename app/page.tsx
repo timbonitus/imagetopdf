@@ -251,8 +251,8 @@ export default function Home() {
                 const fileWithRot = files[i];
                 const canvas = await getCanvasFromFile(fileWithRot);
                 const scaled = downscaleCanvas(canvas, MAX_SIDE_SERVER);
-                const imgBlob = await new Promise<Blob>((res) =>
-                    scaled.toBlob((b) => res(b!), "image/jpeg", JPEG_QUALITY_SERVER)
+                const imgBlob = await new Promise<Blob>((res, rej) =>
+                    scaled.toBlob((b) => b ? res(b) : rej(new Error("Canvas toBlob returned null")), "image/jpeg", JPEG_QUALITY_SERVER)
                 );
                 const jpegFile = new File([imgBlob], `page-${i + 1}.jpg`, { type: "image/jpeg" });
                 formData.append("images", jpegFile);
@@ -286,7 +286,7 @@ export default function Home() {
                     alert(
                         "PDF was built on this device because the server could not finish the request (often upload size or a temporary error)."
                     );
-                } catch {
+                } catch (e1) {
                     try {
                         const blob = await buildPdfInBrowser(
                             MAX_SIDE_CLIENT_FALLBACK,
@@ -296,22 +296,21 @@ export default function Home() {
                         alert(
                             "PDF was built on this device at extra-compressed quality so it could finish."
                         );
-                    } catch {
-                        alert(
-                            "Could not create PDF. Try fewer images or lower-resolution photos."
-                        );
+                    } catch (e2) {
+                        const detail = e2 instanceof Error ? e2.message : String(e2);
+                        alert(`Could not create PDF. Try fewer images or lower-resolution photos.\n\nDetail: ${detail}`);
                     }
                 }
                 return;
             }
 
             alert(serverMessage || `Could not create PDF (${response.status}).`);
-        } catch {
+        } catch (outerErr) {
             try {
                 const blob = await buildPdfInBrowser(MAX_SIDE_SERVER, JPEG_QUALITY_SERVER);
                 triggerPdfDownload(blob);
                 alert("PDF was built on this device because the request to the server failed.");
-            } catch {
+            } catch (e1) {
                 try {
                     const blob = await buildPdfInBrowser(
                         MAX_SIDE_CLIENT_FALLBACK,
@@ -321,10 +320,9 @@ export default function Home() {
                     alert(
                         "PDF was built on this device at reduced quality (server unreachable or image too large)."
                     );
-                } catch {
-                    alert(
-                        "Could not create PDF. Try fewer images (e.g. under 6 pages) or lower-resolution photos."
-                    );
+                } catch (e2) {
+                    const detail = e2 instanceof Error ? e2.message : String(e2);
+                    alert(`Could not create PDF. Try fewer images or lower-resolution photos.\n\nDetail: ${detail}`);
                 }
             }
         }
